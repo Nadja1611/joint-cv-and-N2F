@@ -231,47 +231,8 @@ class Denseg_S2S:
         self.x = f
         self.f = torch.clone(f)
 
- ######################## Classical Chan Vese step############################################       
-    def segmentation_step(self,f):
-        f_orig = torch.clone(f)
-        
-        # for segmentaion process, the input should be normalized and the values should lie in [0,1]
-        
-        '''-------------now the segmentation process starts-------------------'''
-        ''' Update dual variables of image f'''
-        p1 = proj_l1_grad(self.p + self.sigma_tv*gradient(self.x_tilde), self.lam)  # update of TV
-        q1 = torch.ones_like(f)
-        r1 = torch.ones_like(f)
 
-        self.p = p1.clone()
-        self.q = q1.clone()
-        self.r = r1.clone()
-        # Update primal variables
-        x_old = torch.clone(self.x)  
-        self.x = proj_unitintervall(x_old + self.tau*div(p1) - self.tau*adjoint_der_Fid1(x_old, f, self.q) - self.tau *
-                               adjoint_der_Fid2(x_old, f, self.r))  # proximity operator of indicator function on [0,1]
-        self.x_tilde = self.x + self.theta*(self.x-x_old)
-        if self.verbose == True:
-            fidelity = norm1(Fid1(self.x, f)) + norm1(Fid2(self.x,f))
-            total = norm1(gradient(self.x))
-            self.fid.append(fidelity.cpu())
-            tv_p = norm1(gradient(self.x))
-            self.tv.append(total.cpu())
-            energy = fidelity +self.lam* total
-            self.en.append(energy.cpu())
-          #  plt.plot(np.array(self.tv), label = "TV")
-            if self.iteration %999 == 0:  
-                plt.plot(np.array(self.en[:]), label = "energy")
-                plt.plot(np.array(self.fid[:]), label = "fidelity")
-              #  plt.plot(self.lam*np.array(self.tv[498:]))
-                plt.legend()
-                plt.show()
-        self.iteration += 1
-
-
-
-##################### accelerated segmentation algorithm bg constant############################
-##################### accelerated segmentation algorithm bg constant############################
+##################### CV segmentation algorithm bg constant############################
     def segmentation_step2denoisers_acc_bg_constant(self,f, iterations, gt):
         f_orig = torch.clone(f).to(self.device)
         f1 = torch.clone(self.f1)
@@ -329,7 +290,7 @@ class Denseg_S2S:
                 tv_pf = norm1(gradient(self.x*f_orig))
                 self.tv.append(total.cpu())
                 energy = fidelity + self.lam*tv_p
-                #self.en.append(energy.cpu())
+                #here, we create the list of energy values during the segmentation step
                 self.en.append((torch.sum((self.f1-f)**2*self.x) + torch.sum((f -self.mu_r2)**2*(1-self.x)) + self.lam*norm1(gradient(self.x))).cpu())
 
                 
