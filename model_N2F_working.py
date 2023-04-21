@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Apr 11 11:53:00 2023
+Created on Thu Apr 20 21:16:33 2023
 
 @author: johan
 """
@@ -133,26 +133,20 @@ def image_loader(image, device, p1, p2):
     image= loader(image)
     image = image.unsqueeze(0)  #this is for VGG, may not be needed for ResNet
     return image.to(device)
-class Denseg_S2S:
+
+
+class Denseg_N2F:
     def __init__(
         self,
         learning_rate: float = 1e-3,
         lam: float = 0.01,
-        ratio: float = 0.7,
         device: str = 'cuda:0',
-        fid: float = 0.1,
         verbose = False,
-        
     ):
         self.learning_rate = learning_rate
         self.lam = lam
-        self.lam2 = 0.1
-        self.ratio = ratio
-
-        self.sigma_fid = 1.0/8
-        self.sigma_tv = 1
-        #self.tau =  0.95/(4 + 2*5)
-        self.tau = 1/100
+        self.sigma_tv = 1/2
+        self.tau = 1/4
         self.theta = 1.0
         self.difference = []
         self.p = []
@@ -174,7 +168,6 @@ class Denseg_S2S:
         self.f2 = []
         self.verbose = True
         self.Npred = 100
-        self.denois_its = 500
         self.loss_s2s=[]
         self.loss_list_N2F=[]
         self.net = Net()
@@ -183,13 +176,11 @@ class Denseg_S2S:
         self.energy_denoising = []
         self.val_loss_list_N2F = []
         self.bg_loss_list = []
-        self.number_its_N2F=1000
+        self.number_its_N2F=500
         self.fidelity_fg_d_bg =[]
         self.fidelity_bg_d_fg = []
         self.val_loss_list_N2F_firstmask = []
         self.old_x = 0
-        self.fid1 = 0
-        self.fid2= 0
         self.p1 = 0
         self.mu = 0
         self.first_mask = 0
@@ -201,50 +192,87 @@ class Denseg_S2S:
         self.iteration_index = 0
         self.variance = []
         
-    def normalize(self,f):
+    def normalize(self,f): 
+        '''normalize image to range [0,1]'''
         f = torch.tensor(f).float()
         f = (f-torch.min(f))/(torch.max(f)-torch.min(f))
         return f
-    def standardise(self,f):
-        f = torch.tensor(f).unsqueeze(3).float()
-        f = (f - torch.mean(f))/torch.std(f)
-        return f
+
         
     def initialize(self,f):
-        #prepare input for denoiser
-        f_train = torch.tensor(f).unsqueeze(3).float()
-  #      f_train = (f_train - torch.mean(f_train))/torch.std(f_train)
-        dataset = TensorDataset((f_train[:, :, :]), (f_train[:, :, :]))
-        self.train_loader = DataLoader(dataset, batch_size=1, pin_memory=False)
-        
-        f_val = torch.clone(f_train)
-        dataset_val = TensorDataset(f_val, f_val)
-        self.val_loader = DataLoader(dataset_val, batch_size=1, pin_memory=False)
-        self.f_std = torch.clone(f_train)
         #prepare input for segmentation
         f = self.normalize(f)
-        #f = torch.rand_like(f)
-        self.p = gradient(f)
-        self.q = f
-        self.r = f
-        self.x_tilde = f
-        self.x = f
+        self.p = gradient(torch.clone(f))
+        self.q = torch.clone(f)
+        self.r = torch.clone(f)
+        self.x_tilde = torch.clone(f)
+        self.x = torch.clone(f)
         self.f = torch.clone(f)
 
+ ######################## Classical Chan Vese step############################################       
+    def segmentation_step(self,f):
+        f_orig = torch.clone(f)
+        # for segmentaion process, the input should be normalized and the values should lie in [0,1]
+        '''-------------now the segmentation process starts-------------------'''
+        ''' Update dual variables of image f'''
+        p1 = proj_l1_grad(self.p + self.sigma_tv*gradient(self.x_tilde), self.lam)  # update of TV
+        q1 = torch.ones_like(f)
+        r1 = torch.ones_like(f)
 
-##################### CV segmentation algorithm bg constant############################
+        self.p = p1.clone()
+        self.q = q1.clone()
+        self.r = r1.clone()
+        # Update primal variables
+        x_old = torch.clone(self.x)  
+        self.x = proj_unitintervall(x_old + self.tau*div(p1) - self.tau*adjoint_der_Fid1(x_old, f, self.q) - self.tau *
+                               adjoint_der_Fid2(x_old, f, self.r))  # proximity operator of indicator function on [0,1]
+        self.x_tilde = self.x + self.theta*(self.x-x_old)
+        if self.verbose == True:
+            fidelity = norm1(Fid1(torch.clone(self.x), f)) + norm1(Fid2(torch.clone(self.x),f))
+            total = norm1(gradient(torch.clone(self.x)))
+            self.fid.append(fidelity.cpu())
+            tv_p = norm1(gradient(torch.clone(self.x)))
+            self.tv.append(total.cpu())
+            energy = fidelity +self.lam* total
+            self.en.append(energy.cpu())
+          #  plt.plot(np.array(self.tv), label = "TV")
+            if self.iteration %999 == 0:  
+                plt.plot(np.array(self.en[:]), label = "energy")
+                plt.plot(np.array(self.fid[:]), label = "fidelity")
+              #  plt.plot(self.lam*np.array(self.tv[498:]))
+                plt.legend()
+                plt.show()
+        self.iteration += 1
+
+
+    def compute_energy(self,x=None):
+        if x == None:
+            x = torch.clone(self.x)
+        diff1 = torch.clone(self.f-self.f1).float()
+        diff2 = torch.clone(self.f - self.mu_r2).float()
+        energy = torch.sum((diff1)**2*x)+ torch.sum((diff2)**2*(1-x)) + self.lam*norm1(gradient(torch.clone(x)))
+        return energy.cpu()
+    
+    def compute_fidelity(self,x = None):
+        if x == None:
+            x = torch.clone(self.x)
+        diff1 = torch.clone(self.f-self.f1).float()
+        diff2 = torch.clone(self.f - self.mu_r2).float()
+        fidelity = torch.sum((diff1)**2*x)+ torch.sum((diff2)**2*(1-x))
+        return fidelity.cpu()
+##################### accelerated segmentation algorithm bg constant############################
+##################### accelerated segmentation algorithm bg constant############################
     def segmentation_step2denoisers_acc_bg_constant(self,f, iterations, gt):
+        energy_beginning = self.compute_energy()
         f_orig = torch.clone(f).to(self.device)
         f1 = torch.clone(self.f1)
 
         # compute difference between noisy input and denoised image
-        diff1 = (f_orig-f1).float()
+        diff1 = torch.clone(f_orig-f1).float()
         #compute difference between constant of background and originial noisy image
-        diff2 = (f_orig - self.mu_r2)
-        energy_beginning = torch.sum((diff1)**2*self.x)+ torch.sum((diff2)**2*(1-self.x)) + self.lam*norm1(gradient(self.x))
-        print(energy_beginning)
-        self.fid1 = diff1
-        self.fid2= diff2
+        diff2 = torch.clone(f_orig - self.mu_r2).float()
+
+
         q1 = torch.ones_like(f)
         r1 = torch.ones_like(f)
         self.q = q1.clone()
@@ -252,12 +280,13 @@ class Denseg_S2S:
         '''-------------now the segmentation process starts-------------------'''
         ''' Update dual variables of image f'''
         for i in range(iterations):
+            self.en.append(self.compute_energy())
+
             p1 = proj_l1_grad(self.p + self.sigma_tv*gradient(self.x_tilde), self.lam)  # update of TV
     
-
             # Fidelity term without norm (change this in funciton.py)
             #self.p = p1.clone()
-            self.p1 = p1.clone()
+            self.p = p1.clone()
             # Update primal variables
             self.x_old = torch.clone(self.x)  
     
@@ -265,7 +294,6 @@ class Denseg_S2S:
             # constant difference term
             #filteing for smoother differences between denoised images and noisy input images
             self.x = proj_unitintervall(self.x_old + self.tau*div(p1) - self.tau*((diff1)**2) +  self.tau*((diff2**2))) # proximity operator of indicator function on [0,1]
-    
             ######acceleration variables
             self.theta=1/np.sqrt(1+2*self.tau*self.mu)
             self.tau=self.theta*self.tau
@@ -274,7 +302,7 @@ class Denseg_S2S:
             self.x_tilde = self.x + self.theta*(self.x-self.x_old)
            # self.x = torch.round(self.x)
             if self.verbose == True:
-                fidelity = torch.sum((diff1)**2*self.x)+ torch.sum((diff2)**2*(1-self.x))
+                fidelity = self.compute_fidelity()
                 fid_den = torch.sum((diff1)**2*self.x)
                 fid_fg_denoiser_bg = (torch.sum((diff1)**2*(1-self.x))).cpu()
                 fid_bg_denoiser_fg = (torch.sum((diff2)**2*(self.x))).cpu()
@@ -290,13 +318,13 @@ class Denseg_S2S:
                 tv_pf = norm1(gradient(self.x*f_orig))
                 self.tv.append(total.cpu())
                 energy = fidelity + self.lam*tv_p
-                #here, we create the list of energy values during the segmentation step
-                self.en.append((torch.sum((self.f1-f)**2*self.x) + torch.sum((f -self.mu_r2)**2*(1-self.x)) + self.lam*norm1(gradient(self.x))).cpu())
+                #self.en.append(energy.cpu())
+                self.en.append(self.compute_energy())
 
                 
                 gt_bin = torch.clone(gt)
                 gt_bin[gt_bin > 1] = 1
-                seg = torch.round(self.x)
+                seg = torch.round(torch.clone(self.x))
                 fp =torch.sum(seg*(1-gt_bin))
                 fn = torch.sum((1-seg)*gt_bin)
                 tp = torch.sum(seg*gt_bin)
@@ -322,8 +350,8 @@ class Denseg_S2S:
 
 
     def denoising_step_r2(self):
-        f = torch.clone(self.f_std[:,:,:,0])
-        self.mu_r2 = torch.sum((f*(1-self.x))/torch.sum(1-self.x))
+        f = torch.clone(self.f)
+        self.mu_r2 = torch.sum(f*(1-self.x))/torch.sum(1-self.x)
         
 
     
@@ -337,8 +365,8 @@ class Denseg_S2S:
 
         if self.f1 == None:
             self.f1 = torch.clone(self.f)
-        f = torch.clone(self.f_std[:,:,:,0])
-        loss_mask=torch.clone(torch.round(self.x)).detach()
+        f = torch.clone(self.f)
+        loss_mask=torch.round(torch.clone(self.x)).detach()
         img = f[0].cpu().numpy()#*loss_mask[0].cpu().numpy()
         img = np.expand_dims(img,axis=0)
         img = np.expand_dims(img, axis=0)
@@ -481,14 +509,6 @@ class Denseg_S2S:
         listimgH1_mask = [[listimgH_mask[1],listimgH_mask[0]]]
         listimgH2_mask = [[listimgH_mask[0],listimgH_mask[1]]]
         listimg_mask = listimgH1_mask+listimgH2_mask+listimgV1_mask+listimgV2_mask
-        #net = Net()
-        #net.to(self.device)
-        #criterion = torch.sum((output-y)**2*(1-mask)*loss_mask)/torch.sum((1-mask)*loss_mask)
-
-        #criterion = nn.MSELoss()
-        #optimizer = optim.Adam(net.parameters(), lr=self.learning_rate)
-         
-         
         
         img_test = torch.from_numpy(img_test)
         img_test = torch.unsqueeze(img_test,0)
@@ -499,12 +519,11 @@ class Denseg_S2S:
         running_loss2=0.0
         maxpsnr = -np.inf
         timesince = 0
-        last10 = [0]*105
+        last10 = [0]*11
         last10psnr = [0]*105
         cleaned = 0
        # if  self.first_loss > self.current_loss:
         while timesince < self.number_its_N2F:
-                
             indx = np.random.randint(0,len(listimg))
             data = listimg[indx]
             data_mask = listimg_mask[indx]
@@ -515,19 +534,16 @@ class Denseg_S2S:
             self.optimizer.zero_grad()
             outputs = self.net(inputs)
             loss1 = torch.sum((outputs-labello)**2*loss_mask)#+ torch.sum(torch.min(self.f1)-torch.clip(outputs,max=torch.min(self.f1)))#+ 0.1*torch.sum((outputs -  torch.mean(outputs))**2)#/torch.sum(loss_mask)
-            loss = loss1
-            running_loss1+=loss1.item()
-            self.loss_list_N2F.append(loss.detach().cpu())
-            loss.backward()
+            loss1.backward()
             self.optimizer.step()
-             
-             
-            running_loss1=0.0
+            running_loss1+=loss1.item()
+            self.loss_list_N2F.append(loss1.detach().cpu())
+
 
             with torch.no_grad():
                 last10.pop(0)
-                last10.append(cleaned*maxer+minner)
-                outputstest = self.net(img_test).detach()
+                last10.append(cleaned)
+                outputstest = self.net(img_test.detach()).detach()
 
               #  self.en.append((torch.sum((outputstest[0]-img_test[0])**2*self.x) + torch.sum((img_test[0] - torch.sum(img_test[0]*(1-self.x))/torch.sum(1-self.x))**2*(1-self.x)) + self.lam*norm1(gradient(self.x))).cpu())
                 #self.Dice.append(self.Dice[-1])
@@ -563,23 +579,23 @@ class Denseg_S2S:
                     #     for g in self.optimizer.param_groups:
                     #         g['lr'] *= 1
         #print('new learning rate is ', g['lr'])
-  
+            if timesince > 10:
+                H = np.mean(last10, axis=0)
+                self.f1 = torch.from_numpy(H).to(self.device)
+                self.f1 = self.f1.unsqueeze(0)
+                self.en.append(self.compute_energy())
         print('I did ', timesince, ' denoising iterations')
-        H = np.mean(last10, axis=0)
-
+        
         for g in self.optimizer.param_groups:
           g['lr'] *= 0.5
-        self.f1 = torch.from_numpy(H).to(self.device)
         #print(self.learning_rate)
         plt.plot(self.val_loss_list_N2F_firstmask, label="energy_denoising_firstmask")
         plt.plot(self.val_loss_list_N2F_currentmask, label="energy_denoising_currentmask")
 
         plt.legend()
         plt.show()
-        self.f1 = self.f1.unsqueeze(0)
-        self.en.append((torch.sum((self.f1-f)**2*self.x) + torch.sum((f -self.mu_r2)**2*(1-self.x)) + self.lam*norm1(gradient(self.x))).cpu())
+
         self.Dice.append(self.Dice[-1])
 
-        #self.number_its_N2F = 0#self.number_its_N2F*0.9
 
              
