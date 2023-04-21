@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Apr 11 11:52:26 2023
+Created on Thu Apr 20 21:53:35 2023
 
 @author: johan
 """
-
-
 
 
 import os
@@ -59,8 +57,9 @@ args.output_directory = args.output_directory+"/" + args.dataset + "/patient_"+ 
 #define directory where you want to have your outputs saved
 name = "/S2S_Method_"+ args.method + "_Lambda_" + str(args.lam) + "_ratio_"+ str(args.ratio) +'_lr_'+str(args.learning_rate)
 path = args.output_directory+  name
+
 args.lam=0.01
-print(path)
+
 
 def create_dir(dir):
   if not os.path.exists(dir):
@@ -69,24 +68,20 @@ def create_dir(dir):
   else:
     print("Directory already existed : ", dir)
   return dir
-args.patient= 3
+
+args.patient= 2000
 
 create_dir(path)
 
 data = np.load("C:/Users/johan/Desktop/hörnchen/joint_denoising_segmentation/data/"+args.dataset+"/train/train_data.npz")
-#
+
 f = torch.tensor(data["X_train"][args.patient:args.patient+1]).to(device)
 gt = torch.tensor(data["Y_train"][args.patient:args.patient+1]).to(device)
 
-f_denoising = torch.clone(f)
-args.fid = 0.001
-mynet = Denseg_S2S(learning_rate = args.learning_rate, lam = args.lam, fid = args.fid)
+mynet = Denseg_N2F(learning_rate = args.learning_rate, lam = args.lam)
 mynet.initialize(f)
 f=mynet.normalize(f)
-mynet = Denseg_S2S(learning_rate = args.learning_rate, lam = args.lam, fid = args.fid)
-mynet.initialize(f)
-f=mynet.normalize(f)
-n_it =10
+n_it =100
 args.method = "joint"
 cols = []
 first_loss = []
@@ -99,14 +94,14 @@ if args.method == "joint" or args.method == "cv":
         mynet.iteration_index = i
         if i <1:
            mynet.x = (mynet.f>0.6).float()
-           mynet.first_mask = mynet.x
+           mynet.first_mask = torch.clone(mynet.x)
 
         else:
-            previous_mask = torch.round(mynet.x)
-            mynet.first_mask = mynet.x
-
-            mynet.initialize(f)
-            mynet.segmentation_step2denoisers_acc_bg_constant(mynet.f, 10000, gt)
+            if i == 1:
+                mynet.first_mask = torch.clone(mynet.x)
+            previous_mask = torch.round(torch.clone(mynet.x))
+            #mynet.initialize(torch.clone(mynet.f))
+            mynet.segmentation_step2denoisers_acc_bg_constant(mynet.f,5000, gt)
 
             if i > 1:
                 #stopping criterion: if the mean value of the image inside the part of the mask that is added by the last iteration, is closer to the bg mean, stop
@@ -119,12 +114,6 @@ if args.method == "joint" or args.method == "cv":
                 print(difference_2)
                 if difference_1 > difference_2 and i >6:
                     print("done")
-                    break
-            if i == 1:
-                mynet.first_mask = mynet.x
-
-
-
 
             plt.plot(mynet.fidelity_fg, label = "foreground_loss")
             plt.plot(mynet.fidelity_bg[:], label = "background_loss")
@@ -137,23 +126,19 @@ if args.method == "joint" or args.method == "cv":
             plt.show()
             
             plt.plot(mynet.en,label = 'total energy')
-            plt.plot(mynet.Dice,label = 'Dice')
-            plt.plot("Energy")
+            #plt.plot(mynet.Dice,label = 'Dice')
+            #plt.plot("Energy")
             plt.legend()
             plt.show()
 
   
-
-
         if i>-1:
             mynet.denoising_step_r2()
             mynet.N2Fstep()
-            #den
             first_loss.append(mynet.previous_loss)
             curr_loss.append(mynet.current_loss)
             try:
                 if curr_loss[-1] > curr_loss[-2]  and i>1:
-                    print("done")
                     lastepoch = True
 
 
