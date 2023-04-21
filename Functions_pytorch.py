@@ -13,32 +13,18 @@ import os
 import matplotlib.pyplot as plt
 import torch
 
-#def gradient(img):
- #   return np.asarray(np.gradient(img))
-# def gradient(img):
-#     shape = [img.ndim, ] + list(img.shape)
-#     grad= np.zeros(shape, dtype=img.dtype)
-#     slice_all = tuple([0, slice(None, -1),])
-#     for d in range(img.ndim):
-#         grad[slice_all] = np.diff(img, axis=d)
-#         slice_all[0] = d + 1
-#         slice_all.insert(1, slice(None))
-#     return grad
+
 
 '''----input has to be torch tensor of shape ([channels,h,w]), output has size [channels,2,h,w]----'''
 def gradient(img):
     z1 = torch.zeros_like(img)
     z2 = torch.zeros_like(img)
-    #g1,g2 = torch.gradient(img,dim = [-1,-2])
-    g1 = img[:,:,1:]-img[:,:,:-1]
-    g2 = img[:,1:,:]-img[:,:-1,:]
-    z1[:,:,:-1] = g1
-    z2[:,:-1,:] = g2
-   # z2[:,-1,:]= z2[:,-2,:]
-  #  z1[:,:,-1]= z1[:,:,-2]
-    #z1 = g2
-    #z2 = g1
-    return torch.stack([z2,z1], 1)
+    g2 = img[:,:,1:]-img[:,:,:-1]
+    g1 = img[:,1:,:]-img[:,:-1,:]
+    z2[:,:,:-1] = g2
+    z1[:,:-1,:] = g1
+
+    return torch.stack([z1,z2], 1)
 
 
 
@@ -55,7 +41,7 @@ def div(grad):
     z2[:,:,1:-1] = dy
     z1[:,-1,:] = -grad[:,0,-2,:]
     z2[:,:,-1] = -grad[:,1,:,-2]
-    return(z1 + z2)
+    return z1 + z2
     
 
 
@@ -76,18 +62,6 @@ def huber(x,mu):
 
 
 
-# #since the adjoint of the l1-norm, the resolvent operator reduces to 
-# # pointwise euclidean projectors onto l2-balls
-# def proj_l1_grad(g, Lambda):
-#     '''
-#     proximity operator of l1
-#     '''
-#     L = Lambda*torch.ones_like(g[:,0])
-#     n = torch.maximum(torch.sqrt(g[:,0]**2+g[:,1]**2),L)
-#     g[:,0] = g[:,0]/n
-#     g[:,1]= g[:,1]/n #g/max(alpa, |g|)
-#     g = Lambda*g
-#     return g
 
 
 #since the adjoint of the l1-norm, the resolvent operator reduces to 
@@ -96,9 +70,10 @@ def proj_l1_grad(g, Lambda):
     '''
     proximity operator of l1
     '''
-    L = Lambda*torch.ones_like(g[:,0])#+1e-10
+    L = Lambda*torch.ones_like(g[:,0])
    # g=g/L
-    n = torch.maximum(torch.sqrt(g[:,0]**2+g[:,1]**2),torch.ones_like(L))
+    #g = torch.minimum(torch.sqrt(g[:,0]**2+g[:,1]**2), L)
+    n = torch.maximum(torch.sqrt(g[:,0]**2+g[:,1]**2),L)
     g[:,0] = g[:,0]/n
     g[:,1]= g[:,1]/n #g/max(alpa, |g|)
     g = Lambda*g
@@ -131,12 +106,7 @@ def mydot(mat1, mat2):
     return np.dot(mat1.ravel(), mat2.ravel())
 
 mu = 0.000001
-# def Fid1(u,f):
-#    '''
-#    Computes M1(u) u*(f-((u,f)/|u|)**2)
-#    '''
-#    Hub = img_dot(u,f)/huber(u,mu)
-#    return u*(f-(torch.ones_like(f)*(Hub[:,None,None])))**2
+
 
 def Fid1(u,f):
    '''
